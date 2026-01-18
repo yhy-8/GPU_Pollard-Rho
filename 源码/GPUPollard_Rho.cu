@@ -89,6 +89,11 @@ bool run_gpu_factorization(mpz_t n, mpz_t result, gpu_data_t* d_data) {
     memset(&h_data, 0, sizeof(gpu_data_t)); 
 
     size_t countp;
+    // 导出数据前，确保 n 不会超过 BITS 限制，否则会发生内存越界
+    if (mpz_sizeinbase(n, 2) > BITS) {
+        fprintf(stderr, "Error: Number too large for GPU BITS configuration.\n");
+        return false;
+    }
     mpz_export(h_data.n._limbs, &countp, -1, sizeof(uint32_t), 0, 0, n);
     
     checkCudaErrors(cudaMemcpy(d_data, &h_data, sizeof(gpu_data_t), cudaMemcpyHostToDevice));
@@ -98,12 +103,37 @@ bool run_gpu_factorization(mpz_t n, mpz_t result, gpu_data_t* d_data) {
     uint32_t blocks = (num_instances * TPI + threads_per_block - 1) / threads_per_block;
 
     pollard_rho_kernel<<<blocks, threads_per_block>>>(d_data, num_instances);
-    checkCudaErrors(cudaDeviceSynchronize());
+    checkCudaErrors(cudaDeviceSynchronize()); // 确保 GPU 算完
 
     checkCudaErrors(cudaMemcpy(&h_data, d_data, sizeof(gpu_data_t), cudaMemcpyDeviceToHost));
 
     if (h_data.found) {
         mpz_import(result, (BITS/32), -1, sizeof(uint32_t), 0, 0, h_data.factor._limbs);
+        
+        // === 新增验证逻辑 ===
+        
+        // 1. 验证因子是否为 1 (Pollard Rho 有时会失败返回 n 或 1)
+        if (mpz_cmp_ui(result, 1) <= 0) return false;
+
+        // 2. 验证因子是否等于 n (未分解成功)
+        if (mpz_cmp(result, n) == 0) return false;
+
+        // 3. 验证奇偶性：如果 n 是奇数，因子必须是奇数
+        if (mpz_odd_p(n) && mpz_even_p(result)) {
+            char* s_res = mpz_get_str(NULL, 10, result);
+            fprintf(stderr, "Warning: GPU returned even factor %s for odd number! Ignoring.\n", s_res);
+            free(s_res);
+            return false;
+        }
+
+        // 4. 验证整除性：确保 result 确实是 n 的因子
+        if (!mpz_divisible_p(n, result)) {
+            char* s_res = mpz_get_str(NULL, 10, result);
+            fprintf(stderr, "Warning: GPU returned factor %s which does not divide n! Ignoring.\n", s_res);
+            free(s_res);
+            return false;
+        }
+
         return true;
     }
     return false;
@@ -132,6 +162,34 @@ bool trial_division(mpz_t n, std::vector<std::string>& primes) {
     }
     return (mpz_cmp_ui(n, 1) <= 0);
 }
+
+void verify_result(const char* input_str, const std::vector<std::string>& primes) {
+    printf("\n================ Verification ================\n");
+    mpz_t original, product, temp;
+    mpz_init_set_str(original, input_str, 10);
+    mpz_init_set_ui(product, 1);
+    mpz_init(temp);
+
+    for (const auto& s : primes) {
+        mpz_set_str(temp, s.c_str(), 10);
+        mpz_mul(product, product, temp);
+    }
+
+    if (mpz_cmp(original, product) == 0) {
+        printf("SUCCESS: Product of factors matches the original number.\n");
+    } else {
+        printf("FAILURE: Product of factors does NOT match!\n");
+        gmp_printf("Original: %Zd\n", original);
+        gmp_printf("Product : %Zd\n", product);
+    }
+
+    mpz_clear(original);
+    mpz_clear(product);
+    mpz_clear(temp);
+    printf("==============================================\n");
+}
+
+
 
 int main(int argc, char *argv[]) {
     if (argc < 2) {
@@ -246,6 +304,8 @@ int main(int argc, char *argv[]) {
     }
     std::cout << std::endl;
     printf("==============================================\n");
+
+    verify_result(argv[1], primes);
 
     cudaFree(d_data);
     mpz_clear(current_n);
