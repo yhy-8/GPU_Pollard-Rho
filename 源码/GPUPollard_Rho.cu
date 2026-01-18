@@ -170,17 +170,37 @@ void verify_result(const char* input_str, const std::vector<std::string>& primes
     mpz_init_set_ui(product, 1);
     mpz_init(temp);
 
+    bool all_primes = true; // 新增标志位
+
     for (const auto& s : primes) {
         mpz_set_str(temp, s.c_str(), 10);
+        
+        // --- 新增：素性检查 ---
+        // mpz_probab_prime_p 返回 2 (肯定是素数), 1 (可能是素数), 0 (肯定是合数)
+        // 这里的 25 是测试次数，数值越大越准
+        if (mpz_probab_prime_p(temp, 25) == 0) {
+            printf("ERROR: Factor %s is NOT a prime number!\n", s.c_str());
+            all_primes = false;
+        }
+        // --------------------
+
         mpz_mul(product, product, temp);
     }
 
-    if (mpz_cmp(original, product) == 0) {
-        printf("SUCCESS: Product of factors matches the original number.\n");
+    bool product_match = (mpz_cmp(original, product) == 0);
+
+    if (product_match && all_primes) {
+        printf("SUCCESS: Product matches original AND all factors are prime.\n");
     } else {
-        printf("FAILURE: Product of factors does NOT match!\n");
-        gmp_printf("Original: %Zd\n", original);
-        gmp_printf("Product : %Zd\n", product);
+        printf("FAILURE: Verification failed.\n");
+        if (!product_match) {
+            printf(" - Product of factors does NOT match original.\n");
+            gmp_printf("   Original: %Zd\n", original);
+            gmp_printf("   Product : %Zd\n", product);
+        }
+        if (!all_primes) {
+            printf(" - One or more factors are COMPOSITE (not prime).\n");
+        }
     }
 
     mpz_clear(original);
@@ -188,6 +208,7 @@ void verify_result(const char* input_str, const std::vector<std::string>& primes
     mpz_clear(temp);
     printf("==============================================\n");
 }
+
 
 
 
